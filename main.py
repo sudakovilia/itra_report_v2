@@ -548,15 +548,15 @@ class View(tk.Tk):
 
 
 if __name__ == '__main__':
-    view = View()
-    view.main()
+    # view = View()
+    # view.main()
 
-    # dates = [
-    #     # ['2022-08-29', '2022-09-02'],
-    #     # ['2022-09-05', '2022-09-09'],
-    #     ['2022-09-12', '2022-09-16']
-    # ]
+    dates = [
+        ['2022-09-26', '2022-09-30'],
+        # ['2022-09-05', '2022-09-09'],
+        # ['2022-09-12', '2022-09-16']
+    ]
 
-    # for d in dates:
-    #     print(d)
-    #     StaffingVsChargingReportGenerator(*d)
+    for d in dates:
+        print(d)
+        StaffingVsChargingReportGenerator(*d)
