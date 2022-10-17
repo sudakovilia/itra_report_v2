@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from tabnanny import check
 from threading import Thread
 from tkcalendar import DateEntry
 from tkinter import filedialog as fd
@@ -18,12 +17,19 @@ class View(tk.Tk):
         super().__init__()
 
         self.title('ITRA reports')
-        self.minsize(400, 300)
+        self.minsize(400, 350)
 
         self.main_frame = ttk.Frame(self)
         self.main_frame.pack(side='top', fill='both', expand=True, padx=10, pady=10)
 
         current_row = 0
+        employee_label = ttk.Label(self.main_frame, text='Список пользователей')
+        employee_label.grid(row=current_row, column=0, sticky='we')
+        self.employee_file_path = tk.StringVar()
+        employee_button = ttk.Button(self.main_frame, text='Выбрать файл', command=lambda:self.select_file(self.employee_file_path))
+        employee_button.grid(row=current_row, column=1, sticky='we')
+
+        current_row += 1
         staffing_label = ttk.Label(self.main_frame, text='Стаффинг')
         staffing_label.grid(row=current_row, column=0, sticky='we')
         self.staffing_file_path = tk.StringVar()
@@ -101,7 +107,8 @@ class View(tk.Tk):
         file_paths = (
             self.staffing_file_path.get(),
             self.charging_cyber_file_path.get(),
-            self.charging_tr_file_path.get()
+            self.charging_tr_file_path.get(),
+            self.employee_file_path.get()
         )
         return False if '' in file_paths else True
 
@@ -118,6 +125,7 @@ class View(tk.Tk):
         self.generate_report_button['state'] = 'disabled'
         self.main_frame.config(cursor='wait')
         view_context = {
+            'employee_file_path': self.employee_file_path.get(),
             'staffing_file_path': self.staffing_file_path.get(),
             'charging_cyber_file_path': self.charging_cyber_file_path.get(),
             'charging_tr_file_path': self.charging_tr_file_path.get(),
@@ -154,24 +162,39 @@ class ReportGenerationThread(Thread):
     def run(self):
         if self.view_context['report_combo'] == 2:
             generator = StaffingVsChargingReportGenerator(self.view_context)
-            self.result_msg = generator.result_msg
         else:
-            pass
-        
+            generator = StaffingReportGenerator(self.view_context)
+
+        self.result_msg = generator.result_msg
 
 class StaffingReportGenerator:
 
-    def __init__(self, selected_file_path, report_type) -> None:
-        self.loader = StaffingDataLoader(selected_file_path)
-        self.cell_formatter = CellFormatter(report_type)
-        week_name = (self.loader.week_cols[0] + timedelta(days=2)).strftime('%d-%m-%Y')
+    def __init__(self, view_context: dict) -> None:
+        staffing_loader = StaffingDataLoader(
+            view_context['staffing_file_path'],
+            view_context['date_from'],
+            view_context['date_to']
+        )
+        self.staffing_df = staffing_loader.get_df()
+        self.week_cols = staffing_loader.get_week_cols()
+        self.staffing_cell_generator = StaffingReportCellGeneratorV2(
+            staffing_loader.get_df(),
+            1 if view_context['report_combo'] == 0 else 2
+        )
+        employee_data_loader = EmployeeDataLoader(view_context['employee_file_path'])
+        self.employee_df = employee_data_loader.get_employee_df()
+        self.employee_list = employee_data_loader.get_employee_list()
+        
+        week_name = view_context['date_from'].strftime('%d-%m-%Y')
         self.save_path = f'Staffing_ITRA_byPerson-w-{week_name}.xlsx'
+        
         self.set_up_excel_workbook()
         self.set_formats()
         self.print_staff_info()
         self.print_week_cols()
         self.print_report_data()
         self.workbook.close()
+        self.result_msg = {'status': 'ok', 'message': f'Отчет сохранен в файл {self.save_path}'}
 
 
     def set_up_excel_workbook(self):
@@ -181,8 +204,8 @@ class StaffingReportGenerator:
         worksheet.set_zoom(50)
         worksheet.set_column(0, 0, 25)  # ширина колонки с именанми
         worksheet.set_column(1, 1, 10)  # ширина колонки с грейдами
-        worksheet.set_column(2, len(self.loader.week_cols) + 1, 50)  # ширина колонок с инфой
-        for n in range(1, len(self.loader.staff_list) + 1):
+        worksheet.set_column(2, len(self.week_cols) + 1, 50)  # ширина колонок с инфой
+        for n in range(1, len(self.employee_list) + 1):
             worksheet.set_row(n, 150)
         
         self.workbook = workbook
@@ -208,21 +231,21 @@ class StaffingReportGenerator:
         self.worksheet.write(0, 0, 'Specialist', self.header_format)
         self.worksheet.write(0, 1, 'Grade', self.header_format)
 
-        for n, staff in enumerate(self.loader.staff_list):
-            self.worksheet.write(n + 1, 0, staff[1], self.spec_format)
-            self.worksheet.write(n + 1, 1, staff[2], self.spec_format)
+        for n, employee in enumerate(self.employee_list):
+            self.worksheet.write(n + 1, 0, employee[1], self.spec_format)
+            self.worksheet.write(n + 1, 1, employee[2], self.spec_format)
 
     def print_week_cols(self):
-        for n, week in enumerate(self.loader.week_cols):
-            week_label = (week + timedelta(days=2)).strftime('%d %B %Y')
+        for n, week in enumerate(self.week_cols):
+            week_label = week.strftime('%d %B %Y')
             self.worksheet.write(0, n + 2, week_label, self.header_format)
 
     def print_report_data(self):
-        for staff_n, staff in enumerate(self.loader.staff_list):
-            for week_n, week in enumerate(self.loader.week_cols):
-                cell = StaffingReportCellGenerator(staff[0], week, self.loader.df)
-                cell_format = self.workbook.add_format(self.cell_formatter.get_staffing_cell_format(cell.total))
-                self.worksheet.write(staff_n + 1, week_n + 2, cell.text, cell_format)
+        for employee_n, employee in enumerate(self.employee_list):
+            for week_n, week in enumerate(self.week_cols):
+                text = self.staffing_cell_generator.get_cell_text(employee[0], week)
+                format = self.workbook.add_format(self.staffing_cell_generator.get_cell_format(employee[0], week))
+                self.worksheet.write(employee_n + 1, week_n + 2, text, format)
 
 class StaffingVsChargingReportGenerator:
     
@@ -230,17 +253,22 @@ class StaffingVsChargingReportGenerator:
         date_from=view_context['date_from']
         date_to=view_context['date_to']
 
-        employee = EmployeeDataLoader('.\data\ITRA Counsellors.xlsx').df  # TODO вывести выбор файла во View
+        employee = EmployeeDataLoader(view_context['employee_file_path'])
+        employee_df = employee.get_employee_df()
 
         staffing = StaffingDataLoader(view_context['staffing_file_path'])
         staffing_total = staffing.get_total_df(date_from, date_to)
+        staffing_cell_generator = StaffingReportCellGeneratorV2(staffing.get_df(), 1)
         
         charging_cyber = ChargingDataLoader(view_context['charging_cyber_file_path'])
-        charging_tech = ChargingDataLoader(view_context['charging_tr_file_path'])
-        charging_total = pd.concat([charging_cyber.get_total_df(date_from, date_to),
-                                    charging_tech.get_total_df(date_from, date_to)])
+        # charging_tech = ChargingDataLoader(view_context['charging_tr_file_path'])
+        # charging_total = pd.concat([charging_cyber.get_total_df(date_from, date_to),
+                                    # charging_tech.get_total_df(date_from, date_to)])
+        
+        charging_total = charging_cyber.get_total_df(date_from, date_to)
 
-        report = pd.merge(employee, staffing_total, how='left', left_index=True, right_index=True, sort=False)
+
+        report = pd.merge(employee_df, staffing_total, how='left', left_index=True, right_index=True, sort=False)
         report = pd.merge(report, charging_total, how='left', left_index=True, right_index=True, sort=False)
         report.fillna(value={'Charged on client codes': 0, 'Staffing (total)': 0}, inplace=True)
         report['Charging - Staffing'] = report['Charged on client codes'] - report['Staffing (total)']
@@ -305,9 +333,14 @@ class StaffingVsChargingReportGenerator:
             col += 1
 
             # вывод стаффинга
-            staffing_cell = StaffingReportCellGenerator(gpn, date_from - timedelta(days=2), staffing.df)
-            staffing_cell_format = workbook.add_format(formatter.get_staffing_cell_format(staffing_cell.total))
-            worksheet.write(row, col, staffing_cell.text, staffing_cell_format)
+            text = staffing_cell_generator.get_cell_text(gpn, date_from)
+            format = workbook.add_format(staffing_cell_generator.get_cell_format(gpn, date_from))
+            worksheet.write(
+                row,
+                col,
+                text,
+                format
+            )
             col += 1
 
             # вывод стаффинга (тотал)
@@ -344,7 +377,7 @@ class StaffingVsChargingReportGenerator:
             col += 1
 
             # вывод комментария
-            comment_text = 'Vacation' if 'Vacation' in staffing_cell.text else ''
+            comment_text = 'Vacation' if 'Vacation' in text else ''
             worksheet.write(row, col, comment_text, base_fmt)
             col += 1
 
@@ -424,31 +457,65 @@ class CellFormatter:
 
         return format
 
-class StaffingReportCellGenerator:
+# class StaffingReportCellGenerator:
 
-    def __init__(self, gpn, week, df) -> None:
-        self.df_filtered = df.loc[(df['GPN'] == gpn) & (df['Период'] == week)]
-        self.generate_cell_text()
-        self.calculate_cell_total()
+#     def __init__(self, gpn, week, df) -> None:
+#         self.df_filtered = df.loc[(df['GPN'] == gpn) & (df['Период'] == week)]
+#         self.generate_cell_text()
+#         self.calculate_cell_total()
 
-    def generate_cell_text(self):
-        job_hours_df = self.df_filtered[['Job', 'Hours']].groupby('Job', as_index=False).sum()
+#     def generate_cell_text(self):
+#         job_hours_df = self.df_filtered[['Job', 'Hours']].groupby('Job', as_index=False).sum()
+#         hours_list = [hours for _, hours in job_hours_df.values.tolist()]
+        
+#         if job_hours_df.empty or not(any(hours_list)):
+#             self.text = '="0"'
+#         else:
+#             self.text = '='
+#             for job_name, hours in job_hours_df.values.tolist():
+#                 if hours != 0:
+#                     self.text += f'"{job_name} ({hours:.0f})"&char(10)&'
+                
+#             self.text = self.text[:-10]
+
+#     def calculate_cell_total(self):
+#         staff_hours_df = self.df_filtered[['Staff', 'Hours']].groupby('Staff', as_index=False).sum()
+#         self.total = 0 if staff_hours_df.empty else staff_hours_df['Hours'].values[0]
+
+class StaffingReportCellGeneratorV2:
+
+    def __init__(self, staffing_df, fmt_type) -> None:
+        self.staffing_df = staffing_df
+        self.formatter = CellFormatter(fmt_type)
+
+    def get_cell_text(self, gpn, week):
+        df_filtered = self.staffing_df.loc[(self.staffing_df['GPN'] == gpn) & (self.staffing_df['Период'] == week)]
+        job_hours_df = df_filtered[['Job', 'Hours']].groupby('Job', as_index=False).sum()
         hours_list = [hours for _, hours in job_hours_df.values.tolist()]
         
+        text = str()
         if job_hours_df.empty or not(any(hours_list)):
-            self.text = '="0"'
+            text = '="0"'
         else:
-            self.text = '='
+            text = '='
             for job_name, hours in job_hours_df.values.tolist():
                 if hours != 0:
-                    self.text += f'"{job_name} ({hours:.0f})"&char(10)&'
+                    text += f'"{job_name} ({hours:.0f})"&char(10)&'
                 
-            self.text = self.text[:-10]
+            text = text[:-10]
+        
+        return text
 
-    def calculate_cell_total(self):
-        staff_hours_df = self.df_filtered[['Staff', 'Hours']].groupby('Staff', as_index=False).sum()
-        self.total = 0 if staff_hours_df.empty else staff_hours_df['Hours'].values[0]
+    def get_cell_total(self, gpn, week):
+        df_filtered = self.staffing_df.loc[(self.staffing_df['GPN'] == gpn) & (self.staffing_df['Период'] == week)]
+        staff_hours_df = df_filtered[['GPN', 'Hours']].groupby('GPN', as_index=False).sum()
+        total = 0 if staff_hours_df.empty else staff_hours_df['Hours'].values[0]
+        return total
 
+    def get_cell_format(self, gpn, week):
+        total = self.get_cell_total(gpn, week)
+        return self.formatter.get_staffing_cell_format(total)
+        
 class EmployeeDataLoader:
 
     def __init__(self, path_to_file) -> None:
@@ -463,24 +530,35 @@ class EmployeeDataLoader:
 
         self.df = data_df
 
+    def get_employee_df(self):
+        return self.df
+
+    def get_employee_list(self):
+        df = self.df[['Name', 'Short Grade']].reset_index()
+        return df.values.tolist()
+
 class StaffingDataLoader:
 
-    def __init__(self, path_to_file):
+    def __init__(self, path_to_file, date_from=None, date_to=None):
         self.data_path = path_to_file
         self.load_data()
         self.preprocess_data()
-        self.get_staff_list()
+        if date_from:
+            self.remove_data_before(date_from)
+        if date_to:
+            self.remove_data_after(date_to)
+        # self.get_staff_list()
         # self.remove_old_periods_data()
-        self.get_week_cols()
 
     def load_data(self):
-        self.raw_df = pd.read_excel(self.data_path,
-                                    converters={
-                                        'Период': lambda x: datetime.strptime(x, "%d.%m.%Y").date(),
-                                        'GPN': str,
-                                        'MU': str
-                                        }
-                                    )
+        self.raw_df = pd.read_excel(
+            self.data_path,
+            converters={
+                'Период': lambda x: datetime.strptime(x, "%d.%m.%Y").date(),
+                'GPN': str,
+                'MU': str
+            }
+        )
 
     def preprocess_data(self):
         df = self.raw_df.copy()
@@ -490,36 +568,38 @@ class StaffingDataLoader:
         df['Staff'] = df['Staff'].str.replace(', ', ' ')
         df = df[df['Staff.Suspended'] == 'Нет']
         df = df[df['MU'] == '00217']
-        df = df[['GPN', 'Период', 'Job', 'Hours', 'Staff', 'Position']]
+        df = df[['GPN', 'Период', 'Job', 'Hours']]
+        df['Период'] = df['Период'] + timedelta(days=2)
         self.df = df
 
     def get_week_cols(self):
-        self.week_cols = self.df['Период'].unique().tolist()
-        self.week_cols.sort()
+        week_cols = self.df['Период'].unique().tolist()
+        week_cols.sort()
+        return week_cols
 
-    def get_staff_list(self):
-        try:
-            with open('grades.json', 'r') as f:
-                grades = json.load(f)
-                grades_order = {key: n for (n, key) in enumerate(grades.keys())}
-        except:
-            raise Exception('Ошибка файла grades.json')
+    # def get_staff_list(self):
+    #     try:
+    #         with open('grades.json', 'r') as f:
+    #             grades = json.load(f)
+    #             grades_order = {key: n for (n, key) in enumerate(grades.keys())}
+    #     except:
+    #         raise Exception('Ошибка файла grades.json')
         
-        staff_df = self.df[['GPN', 'Staff', 'Position']].drop_duplicates()
-        staff_df['Grade'] = staff_df['Position'].map(grades)
-        staff_df['Grade_order'] = staff_df['Position'].map(grades_order)
-        staff_df.sort_values(by=['Grade_order', 'Staff'], inplace=True, ignore_index=True)
-        staff_df.drop(columns=['Position',	'Grade_order'], inplace=True)
-        staff_df.fillna(value='', inplace=True)
-        self.staff_list = staff_df.values.tolist()
+    #     staff_df = self.df[['GPN', 'Staff', 'Position']].drop_duplicates()
+    #     staff_df['Grade'] = staff_df['Position'].map(grades)
+    #     staff_df['Grade_order'] = staff_df['Position'].map(grades_order)
+    #     staff_df.sort_values(by=['Grade_order', 'Staff'], inplace=True, ignore_index=True)
+    #     staff_df.drop(columns=['Position',	'Grade_order'], inplace=True)
+    #     staff_df.fillna(value='', inplace=True)
+    #     self.staff_list = staff_df.values.tolist()
 
-    # def remove_old_periods_data(self):
-    #     report_date_from = datetime.today().date() - timedelta(weeks=1)
-    #     self.df = self.df[self.df['Период'] > report_date_from]
+    def remove_data_before(self, date_from):
+        self.df = self.df[self.df['Период'] >= date_from]
 
-    def get_total_df(self, date_from=None, date_to=None):
-        date_from -= timedelta(days=2)
-        date_to -= timedelta(days=2)
+    def remove_data_after(self, date_to):
+        self.df = self.df[self.df['Период'] <= date_to]
+
+    def get_total_df(self, date_from, date_to):
         df = self.df.copy()
         if date_from is not None:
             df = df[df['Период'] >= date_from]
@@ -528,6 +608,9 @@ class StaffingDataLoader:
         df = df.groupby('GPN').sum()
         df = df.rename({'Hours': 'Staffing (total)'}, axis=1)
         return df
+
+    def get_df(self):
+        return self.df
 
 class ChargingDataLoader:
 
@@ -591,3 +674,17 @@ if __name__ == '__main__':
     #     StaffingVsChargingReportGenerator(*d)
 
     # generator = StaffingReportGenerator('./data/staffing.xlsx', 1)
+
+    # staffing = StaffingDataLoader('./data/staffing.xlsx')
+    # df = staffing.get_df()
+
+    # print(df.to_excel('res.xlsx'))
+    # week_cols = staffing.get_week_cols()
+    # print(week_cols)
+    # print(week_cols[0])
+    # print(type(week_cols[0]))
+
+    # empl = EmployeeDataLoader('./data/ITRA Counsellors.xlsx')
+    # # res = empl.get_employee_df()
+    # # res.to_excel('empl.xlsx')
+    # print(empl.get_employee_list())
