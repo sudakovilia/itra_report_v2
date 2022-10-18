@@ -1,11 +1,10 @@
 from datetime import datetime, timedelta
 from threading import Thread
 from tkcalendar import DateEntry
-from tkinter import filedialog as fd
+from tkinter import E, filedialog as fd
 from tkinter import messagebox as mb
 from tkinter import ttk
 import json
-import numpy as np
 import pandas as pd
 import tkinter as tk
 import xlsxwriter
@@ -17,13 +16,13 @@ class View(tk.Tk):
         super().__init__()
 
         self.title('ITRA reports')
-        self.minsize(400, 350)
+        self.minsize(400, 300)
 
         self.main_frame = ttk.Frame(self)
         self.main_frame.pack(side='top', fill='both', expand=True, padx=10, pady=10)
 
         current_row = 0
-        employee_label = ttk.Label(self.main_frame, text='Список пользователей')
+        employee_label = ttk.Label(self.main_frame, text='Список сотрудников')
         employee_label.grid(row=current_row, column=0, sticky='we')
         self.employee_file_path = tk.StringVar()
         employee_button = ttk.Button(self.main_frame, text='Выбрать файл', command=lambda:self.select_file(self.employee_file_path))
@@ -37,18 +36,11 @@ class View(tk.Tk):
         staffing_button.grid(row=current_row, column=1, sticky='we')
 
         current_row += 1
-        charging_cyber_label = ttk.Label(self.main_frame, text='Чарджинг Cyber')
-        charging_cyber_label.grid(row=current_row, column=0, sticky='w')
-        self.charging_cyber_file_path = tk.StringVar()
-        charging_cyber_button = ttk.Button(self.main_frame, text='Выбрать файл', command=lambda:self.select_file(self.charging_cyber_file_path))
-        charging_cyber_button.grid(row=current_row, column=1, sticky='we')
-
-        current_row += 1
-        charging_tr_label = ttk.Label(self.main_frame, text='Чарджинг TR')
-        charging_tr_label.grid(row=current_row, column=0, sticky='w')
-        self.charging_tr_file_path = tk.StringVar()
-        charging_tr_button = ttk.Button(self.main_frame, text='Выбрать файл', command=lambda:self.select_file(self.charging_tr_file_path))
-        charging_tr_button.grid(row=current_row, column=1, sticky='we')
+        charging_label = ttk.Label(self.main_frame, text='Чарджинг')
+        charging_label.grid(row=current_row, column=0, sticky='w')
+        self.charging_file_path = tk.StringVar()
+        charging_button = ttk.Button(self.main_frame, text='Выбрать файл', command=lambda:self.select_file(self.charging_file_path))
+        charging_button.grid(row=current_row, column=1, sticky='we')
 
         current_row += 1
         date_from_label = ttk.Label(self.main_frame, text='Дата ОТ')
@@ -106,8 +98,7 @@ class View(tk.Tk):
     def check_all_files_selected(self):
         file_paths = (
             self.staffing_file_path.get(),
-            self.charging_cyber_file_path.get(),
-            self.charging_tr_file_path.get(),
+            self.charging_file_path.get(),
             self.employee_file_path.get()
         )
         return False if '' in file_paths else True
@@ -115,11 +106,22 @@ class View(tk.Tk):
     def check_dates_valid(self):
         date_from = datetime.strptime(self.date_from_str.get(), '%m/%d/%y').date()
         date_to = datetime.strptime(self.date_to_str.get(), '%m/%d/%y').date()
-        return False if (date_to - date_from).days < 4 else True
+
+        if date_from >= date_to:
+            return False
+
+        if date_from.weekday() != 0 and date_to.weekday() != 4:
+            return False
+                
+        report_selected = self.report_combo.current()
+        if report_selected == 2 and (date_to - date_from).days != 4:
+            return False
+
+        return True
 
     def generate_report(self):
         if not(self.check_dates_valid()):
-            mb.showerror(title='Ошибка', message='Дата ДО должна быть больше даты ОТ минимум на 4 дня')
+            mb.showerror(title='Ошибка', message='Проверьте что:\n1. Дата ОТ - понедельник\n2. Дата ДО - пятница\n3. Период сверки - 1 неделя')
             return 1
 
         self.generate_report_button['state'] = 'disabled'
@@ -127,8 +129,7 @@ class View(tk.Tk):
         view_context = {
             'employee_file_path': self.employee_file_path.get(),
             'staffing_file_path': self.staffing_file_path.get(),
-            'charging_cyber_file_path': self.charging_cyber_file_path.get(),
-            'charging_tr_file_path': self.charging_tr_file_path.get(),
+            'charging_file_path': self.charging_file_path.get(),
             'date_from': datetime.strptime(self.date_from_str.get(), '%m/%d/%y').date(),
             'date_to': datetime.strptime(self.date_to_str.get(), '%m/%d/%y').date(),
             'report_combo': self.report_combo.current()
@@ -170,18 +171,33 @@ class ReportGenerationThread(Thread):
 class StaffingReportGenerator:
 
     def __init__(self, view_context: dict) -> None:
-        staffing_loader = StaffingDataLoader(
-            view_context['staffing_file_path'],
-            view_context['date_from'],
-            view_context['date_to']
-        )
+        try:
+            staffing_loader = StaffingDataLoader(
+                view_context['staffing_file_path'],
+                view_context['date_from'],
+                view_context['date_to']
+            )
+        except Exception as e:
+            self.result_msg = {'status': 'error', 'message': 'Ошибка загрузки стаффинга'}
+            return None
         self.staffing_df = staffing_loader.get_df()
         self.week_cols = staffing_loader.get_week_cols()
-        self.staffing_cell_generator = StaffingReportCellGeneratorV2(
-            staffing_loader.get_df(),
-            1 if view_context['report_combo'] == 0 else 2
-        )
-        employee_data_loader = EmployeeDataLoader(view_context['employee_file_path'])
+        
+        try:
+            self.staffing_cell_generator = StaffingReportCellGenerator(
+                staffing_loader.get_df(),
+                1 if view_context['report_combo'] == 0 else 2
+            )
+        except Exception as e:
+            self.result_msg = {'status': 'error', 'message': 'Ошибка загрузки файла formats.json'}
+            return None
+        
+        try:
+            employee_data_loader = EmployeeDataLoader(view_context['employee_file_path'])
+        except Exception as e:
+            self.result_msg = {'status': 'error', 'message': 'Ошибка загрузки списка сотрудников'}
+            return None
+
         self.employee_df = employee_data_loader.get_employee_df()
         self.employee_list = employee_data_loader.get_employee_list()
         
@@ -253,20 +269,33 @@ class StaffingVsChargingReportGenerator:
         date_from=view_context['date_from']
         date_to=view_context['date_to']
 
-        employee = EmployeeDataLoader(view_context['employee_file_path'])
+        try:
+            employee = EmployeeDataLoader(view_context['employee_file_path'])
+        except Exception as e:
+            self.result_msg = {'status': 'error', 'message': 'Ошибка загрузки списка сотрудников'}
+            return None
         employee_df = employee.get_employee_df()
 
-        staffing = StaffingDataLoader(view_context['staffing_file_path'])
+        try:
+            staffing = StaffingDataLoader(view_context['staffing_file_path'])
+        except Exception as e:
+            self.result_msg = {'status': 'error', 'message': 'Ошибка загрузки стаффинга'}
+            return None
         staffing_total = staffing.get_total_df(date_from, date_to)
-        staffing_cell_generator = StaffingReportCellGeneratorV2(staffing.get_df(), 1)
-        
-        charging_cyber = ChargingDataLoader(view_context['charging_cyber_file_path'])
-        # charging_tech = ChargingDataLoader(view_context['charging_tr_file_path'])
-        # charging_total = pd.concat([charging_cyber.get_total_df(date_from, date_to),
-                                    # charging_tech.get_total_df(date_from, date_to)])
-        
-        charging_total = charging_cyber.get_total_df(date_from, date_to)
 
+        try:
+            staffing_cell_generator = StaffingReportCellGenerator(staffing.get_df(), 1)
+        except:
+            self.result_msg = {'status': 'error', 'message': 'Ошибка загрузки файла formats.json'}
+            return None
+
+        try:
+            charging = ChargingDataLoader(view_context['charging_file_path'])
+        except Exception as e:
+            self.result_msg = {'status': 'error', 'message': 'Ошибка загрузки чарджинга'}
+            return None
+
+        charging_total = charging.get_total_df(date_from, date_to)
 
         report = pd.merge(employee_df, staffing_total, how='left', left_index=True, right_index=True, sort=False)
         report = pd.merge(report, charging_total, how='left', left_index=True, right_index=True, sort=False)
@@ -276,7 +305,12 @@ class StaffingVsChargingReportGenerator:
         report['Project manager'] = ''
 
         # вывод сверки в файл
-        formatter = CellFormatter()
+        try:
+            formatter = CellFormatter()
+        except Exception as e:
+            self.result_msg = {'status': 'error', 'message': f'Ошибка загрузки файла formats.json'}
+            return None
+            
         output_file_name = 'Staffing vs Charging_week {}-{}.xlsx'.format(date_from.strftime("%d.%m"),
                                                                          date_to.strftime("%d.%m.%Y"))
 
@@ -390,11 +424,8 @@ class StaffingVsChargingReportGenerator:
 class CellFormatter:
 
     def __init__(self, fmt_type=1) -> None:
-        try:
-            with open('formats.json', 'r') as f:
-                self.color_ranges = json.load(f)[str(fmt_type)]
-        except:
-            raise Exception('Ошибка файла formats.json')
+        with open('formats.json', 'r') as f:
+            self.color_ranges = json.load(f)[str(fmt_type)]
         
         self.base_format = {
             'align': 'center',
@@ -457,36 +488,11 @@ class CellFormatter:
 
         return format
 
-# class StaffingReportCellGenerator:
-
-#     def __init__(self, gpn, week, df) -> None:
-#         self.df_filtered = df.loc[(df['GPN'] == gpn) & (df['Период'] == week)]
-#         self.generate_cell_text()
-#         self.calculate_cell_total()
-
-#     def generate_cell_text(self):
-#         job_hours_df = self.df_filtered[['Job', 'Hours']].groupby('Job', as_index=False).sum()
-#         hours_list = [hours for _, hours in job_hours_df.values.tolist()]
-        
-#         if job_hours_df.empty or not(any(hours_list)):
-#             self.text = '="0"'
-#         else:
-#             self.text = '='
-#             for job_name, hours in job_hours_df.values.tolist():
-#                 if hours != 0:
-#                     self.text += f'"{job_name} ({hours:.0f})"&char(10)&'
-                
-#             self.text = self.text[:-10]
-
-#     def calculate_cell_total(self):
-#         staff_hours_df = self.df_filtered[['Staff', 'Hours']].groupby('Staff', as_index=False).sum()
-#         self.total = 0 if staff_hours_df.empty else staff_hours_df['Hours'].values[0]
-
-class StaffingReportCellGeneratorV2:
+class StaffingReportCellGenerator:
 
     def __init__(self, staffing_df, fmt_type) -> None:
         self.staffing_df = staffing_df
-        self.formatter = CellFormatter(fmt_type)
+        self.formatter = CellFormatter(fmt_type)            
 
     def get_cell_text(self, gpn, week):
         df_filtered = self.staffing_df.loc[(self.staffing_df['GPN'] == gpn) & (self.staffing_df['Период'] == week)]
@@ -527,6 +533,7 @@ class EmployeeDataLoader:
         data_df.set_index('GPN', inplace=True)
         data_df['grade_order'] = data_df['Grade'].map(grades_order)
         data_df.sort_values(by=['grade_order', 'Name'], inplace=True)
+        data_df[['Counselor']] = data_df[['Counselor']].fillna(value='')
 
         self.df = data_df
 
@@ -547,8 +554,6 @@ class StaffingDataLoader:
             self.remove_data_before(date_from)
         if date_to:
             self.remove_data_after(date_to)
-        # self.get_staff_list()
-        # self.remove_old_periods_data()
 
     def load_data(self):
         self.raw_df = pd.read_excel(
@@ -577,22 +582,6 @@ class StaffingDataLoader:
         week_cols.sort()
         return week_cols
 
-    # def get_staff_list(self):
-    #     try:
-    #         with open('grades.json', 'r') as f:
-    #             grades = json.load(f)
-    #             grades_order = {key: n for (n, key) in enumerate(grades.keys())}
-    #     except:
-    #         raise Exception('Ошибка файла grades.json')
-        
-    #     staff_df = self.df[['GPN', 'Staff', 'Position']].drop_duplicates()
-    #     staff_df['Grade'] = staff_df['Position'].map(grades)
-    #     staff_df['Grade_order'] = staff_df['Position'].map(grades_order)
-    #     staff_df.sort_values(by=['Grade_order', 'Staff'], inplace=True, ignore_index=True)
-    #     staff_df.drop(columns=['Position',	'Grade_order'], inplace=True)
-    #     staff_df.fillna(value='', inplace=True)
-    #     self.staff_list = staff_df.values.tolist()
-
     def remove_data_before(self, date_from):
         self.df = self.df[self.df['Период'] >= date_from]
 
@@ -605,7 +594,7 @@ class StaffingDataLoader:
             df = df[df['Период'] >= date_from]
         if date_to is not None:
             df = df[df['Период'] <= date_to]
-        df = df.groupby('GPN').sum()
+        df = df.groupby('GPN').sum(numeric_only=True)
         df = df.rename({'Hours': 'Staffing (total)'}, axis=1)
         return df
 
@@ -637,24 +626,14 @@ class ChargingDataLoader:
     def filter_data(self):
         self.df = self.df[self.df['Eng. Type'] == 'C']
         self.df = self.df[['GPN', 'Hrs', 'Timesheet Date']]
-
-    def get_total_by_gpn(self, gpn, date_from=None, date_to=None):
-        df = self.df.copy()
-        if date_from is not None:
-            df = df[df['Timesheet Date'] >= date_from]
-        if date_to is not None:
-            df = df[df['Timesheet Date'] <= date_to]
-        df = df.groupby('GPN').sum()
-        
-        return float(df.loc[gpn])
-    
+   
     def get_total_df(self, date_from=None, date_to=None):
         df = self.df.copy()
         if date_from is not None:
             df = df[df['Timesheet Date'] >= date_from]
         if date_to is not None:
             df = df[df['Timesheet Date'] <= date_to]
-        df = df.groupby('GPN').sum()
+        df = df.groupby('GPN').sum(numeric_only=True)
         df = df.rename({'Hrs': 'Charged on client codes'}, axis=1)
         return df
 
@@ -662,29 +641,3 @@ class ChargingDataLoader:
 if __name__ == '__main__':
     view = View()
     view.main()
-
-    # dates = [
-    #     ['2022-09-26', '2022-09-30'],
-    #     # ['2022-09-05', '2022-09-09'],
-    #     # ['2022-09-12', '2022-09-16']
-    # ]
-
-    # for d in dates:
-    #     print(d)
-    #     StaffingVsChargingReportGenerator(*d)
-
-    # generator = StaffingReportGenerator('./data/staffing.xlsx', 1)
-
-    # staffing = StaffingDataLoader('./data/staffing.xlsx')
-    # df = staffing.get_df()
-
-    # print(df.to_excel('res.xlsx'))
-    # week_cols = staffing.get_week_cols()
-    # print(week_cols)
-    # print(week_cols[0])
-    # print(type(week_cols[0]))
-
-    # empl = EmployeeDataLoader('./data/ITRA Counsellors.xlsx')
-    # # res = empl.get_employee_df()
-    # # res.to_excel('empl.xlsx')
-    # print(empl.get_employee_list())
