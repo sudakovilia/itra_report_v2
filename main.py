@@ -106,14 +106,14 @@ class View(tk.Tk):
     def check_dates_valid(self):
         date_from = datetime.strptime(self.date_from_str.get(), '%m/%d/%y').date()
         date_to = datetime.strptime(self.date_to_str.get(), '%m/%d/%y').date()
+        report_selected = self.report_combo.current()
 
         if date_from >= date_to:
             return False
 
-        if date_from.weekday() != 0 and date_to.weekday() != 4:
+        if date_from.weekday() != 0 or date_to.weekday() != 4:
             return False
                 
-        report_selected = self.report_combo.current()
         if report_selected == 2 and (date_to - date_from).days != 4:
             return False
 
@@ -121,9 +121,10 @@ class View(tk.Tk):
 
     def generate_report(self):
         if not(self.check_dates_valid()):
-            mb.showerror(title='Ошибка', message='Проверьте что:\n1. Дата ОТ - понедельник\n2. Дата ДО - пятница\n3. Период сверки - 1 неделя')
+            msg = 'Проверьте что:\n1. Дата ОТ < Даты ДО\n2. Дата ОТ - понедельник\n3. Дата ДО - пятница\n4. Период сверки - 1 неделя'
+            mb.showerror(title='Ошибка', message=msg)
             return 1
-
+        
         self.generate_report_button['state'] = 'disabled'
         self.main_frame.config(cursor='wait')
         view_context = {
@@ -158,7 +159,7 @@ class ReportGenerationThread(Thread):
     def __init__(self, view_context: dict):
         super().__init__()
         self.view_context = view_context
-        self.result_msg = str()
+        self.result_msg = {'status': 'error', 'message': 'Report generation error'}
 
     def run(self):
         if self.view_context['report_combo'] == 2:
