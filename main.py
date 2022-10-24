@@ -532,6 +532,7 @@ class EmployeeDataLoader:
         
         data_df = pd.read_excel(path_to_file, converters={'GPN': str}, sheet_name='Data')
         data_df.set_index('GPN', inplace=True)
+        data_df['Short Grade'] = data_df['Grade'].map(grades)
         data_df['grade_order'] = data_df['Grade'].map(grades_order)
         data_df.sort_values(by=['grade_order', 'Name'], inplace=True)
         data_df[['Counselor']] = data_df[['Counselor']].fillna(value='')
