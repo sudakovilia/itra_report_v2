@@ -563,7 +563,6 @@ class StaffingDataLoader:
             converters={
                 'Период': lambda x: datetime.strptime(x, "%d.%m.%Y").date(),
                 'GPN': str,
-                'MU': str
             }
         )
 
@@ -574,7 +573,6 @@ class StaffingDataLoader:
         df['Position'] = df['Position'].fillna('')
         df['Staff'] = df['Staff'].str.replace(', ', ' ')
         df = df[df['Staff.Suspended'] == 'Нет']
-        df = df[df['MU'] == '00217']
         df = df[['GPN', 'Период', 'Job', 'Hours']]
         df['Период'] = df['Период'] + timedelta(days=2)
         self.df = df
